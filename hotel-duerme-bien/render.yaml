@@ -1,0 +1,13 @@
+# Despliegue PaaS (Render.com, plan gratuito/bajo costo): "New > Blueprint" apuntando al repositorio
+services:
+  - type: web
+    name: hotel-duerme-bien
+    runtime: docker
+    healthCheckPath: /api/health
+    envVars:
+      - key: ADMIN_PASSWORD
+        sync: false   # se ingresa en el panel, no en el repositorio
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1

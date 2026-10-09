@@ -1,0 +1,12 @@
+*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#f4f6f8;color:#1c2733}
+header{background:#1d3557;color:#fff;padding:12px 20px;display:flex;justify-content:space-between;align-items:center}
+h1{font-size:1.2rem;margin:0}main{max-width:960px;margin:20px auto;padding:0 12px}
+section{background:#fff;border-radius:8px;padding:16px;margin-bottom:16px;box-shadow:0 1px 3px #0002}
+h2{margin-top:0;font-size:1.05rem}table{width:100%;border-collapse:collapse}
+th,td{padding:6px 8px;border-bottom:1px solid #e3e8ee;text-align:left;font-size:.9rem}
+input,select,button{padding:7px 10px;margin:3px;border:1px solid #b9c3cf;border-radius:5px;font-size:.9rem}
+button{background:#1d3557;color:#fff;border:0;cursor:pointer}button.sec{background:#6c7a89}button.del{background:#c0392b}
+.ocupada{color:#c0392b;font-weight:600}.vacante{color:#2e8b57;font-weight:600}
+.msg{padding:8px;border-radius:5px;margin:6px 0}.err{background:#fdecea;color:#912018}.okm{background:#e8f5e9;color:#1b5e20}
+nav button{background:#e3e8ee;color:#1c2733}nav button.on{background:#1d3557;color:#fff}
+.login{max-width:340px;margin:60px auto}

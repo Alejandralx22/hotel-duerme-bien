@@ -1,0 +1,9 @@
+{
+  "name": "hotel-duerme-bien",
+  "version": "1.0.0",
+  "description": "Prototipo funcional - Hotel Duerme Bien (Ingeniería de Software, Unidad 3). Sin dependencias externas.",
+  "type": "module",
+  "engines": { "node": ">=22.5" },
+  "scripts": { "start": "node --no-warnings server.js", "test": "node --no-warnings --test tests/api.test.js" },
+  "license": "MIT"
+}
