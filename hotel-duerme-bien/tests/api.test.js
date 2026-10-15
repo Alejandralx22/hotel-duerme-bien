@@ -1,13 +1,14 @@
 // Pruebas automatizadas: ejecutar con `npm test`. Cada test lleva el ID del caso de prueba (CP-xx).
-import { test, before, after } from 'node:test';
+import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from '../src/db.js';
 import { createApp } from '../src/app.js';
-import { hashPassword } from '../src/security.js';
+import { hashPassword, resetAttempts } from '../src/security.js';
 
 let server, base, db;
 const ADMIN = 'AdminPass123', ENC = 'Encargado123';
 
+beforeEach(() => resetAttempts()); // el bloqueo anti fuerza bruta no debe afectar a otras pruebas
 before(async () => {
   db = openDb(':memory:');
   const ins = db.prepare('INSERT INTO users (username,password_hash,role,created_at) VALUES (?,?,?,?)');
@@ -19,6 +20,10 @@ before(async () => {
 after(() => server.close());
 
 async function call(method, url, body, s) {
+  if (body?.responsible_index !== undefined) { // la API recibe is_responsible por pasajero
+    const { responsible_index: ri, ...rest } = body;
+    body = { ...rest, passengers: rest.passengers.map((p, i) => ({ ...p, is_responsible: i === ri })) };
+  }
   const r = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json', ...(s ? { Cookie: s.cookie, 'X-CSRF-Token': s.csrf } : {}) }, body: body ? JSON.stringify(body) : undefined });
   return { status: r.status, body: await r.json(), headers: r.headers };
 }
@@ -27,7 +32,7 @@ async function login(username, password) {
   return { ...r, cookie: r.headers.get('set-cookie')?.split(';')[0], csrf: r.body.csrf };
 }
 const room = (s, number, capacity) => call('POST', '/api/rooms', { number, capacity, orientation: 'norte' }, s);
-const P = (n, rut) => ({ full_name: n, rut });
+const P = (n, rut) => ({ name: n, rut });
 function R(body) { // RUT válido (módulo 11)
   let sum = 0, mul = 2;
   for (let i = body.length - 1; i >= 0; i--) { sum += +body[i] * mul; mul = mul === 7 ? 2 : mul + 1; }
@@ -42,6 +47,7 @@ test('CP-01 login válido entrega sesión con cookie HttpOnly+SameSite', async (
 test('CP-02 login con clave incorrecta -> 401 con mensaje genérico', async () => {
   const r = await login('enc', 'mala'); assert.equal(r.status, 401);
   assert.equal((await login('noexiste', 'mala')).body.error, r.body.error); // no revela si el usuario existe
+  assert.equal(r.body.error, 'Credenciales inválidas');
 });
 test('CP-03 inyección SQL en login es rechazada', async () => {
   const r = await login("' OR '1'='1' --", "' OR '1'='1"); assert.equal(r.status, 401);
@@ -120,9 +126,38 @@ test('CP-15 (RF15) estado ocupada/vacante en el resumen', async () => {
 test('CP-16 cabeceras de seguridad y sin fuga de errores internos', async () => {
   const r = await fetch(base + '/'); assert.match(r.headers.get('content-security-policy'), /default-src 'self'/);
   assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(r.headers.get('referrer-policy'), 'strict-origin-when-cross-origin');
+  assert.equal(r.headers.get('x-frame-options'), 'DENY');
   const bad = await fetch(base + '/api/login', { method: 'POST', body: '{malformado' }); assert.equal(bad.status, 400);
 });
 test('CP-17 path traversal en archivos estáticos bloqueado', async () => {
   assert.equal((await fetch(base + '/..%2f..%2fserver.js')).status, 404);
   assert.equal((await fetch(base + '/%2e%2e/package.json')).status, 404);
+});
+test('CP-18 (A07) mensaje genérico y bloqueo por IP tras 5 fallos consecutivos', async () => {
+  assert.equal((await login('enc', 'mala')).body.error, 'Credenciales inválidas');
+  for (let i = 0; i < 4; i++) await login('fantasma' + i, 'x'); // 5 fallos desde la misma IP, usuarios distintos
+  assert.equal((await login('enc', ENC)).status, 429); // incluso con la clave correcta
+});
+test('CP-19 bitácora paginada y filtrable; solo el Administrador', async () => {
+  const a = await login('admin', ADMIN);
+  const p = await call('GET', '/api/audit?action=login&limit=2&page=1', null, a);
+  assert.equal(p.status, 200); assert.ok(p.body.rows.length <= 2 && p.body.total >= 2 && p.body.pages >= 1);
+  assert.ok(p.body.rows.every((x) => x.action === 'login'));
+  const u = await call('GET', '/api/audit?username=ADMIN', null, a);
+  assert.ok(u.body.rows.length > 0 && u.body.rows.every((x) => /admin/i.test(x.username)));
+  assert.equal((await call('GET', '/api/audit?action=hackeo', null, a)).status, 400);
+  const rooms = (await call('GET', '/api/audit?action=create_room&limit=50', null, a)).body.rows;
+  assert.ok(rooms.length > 0 && rooms[0].ip_address && rooms[0].timestamp);
+  assert.equal((await call('GET', '/api/audit', null, await login('enc', ENC))).status, 403);
+});
+test('CP-20 (RF14) exactamente un responsable; orientaciones válidas', async () => {
+  const s = await login('enc', ENC);
+  const v = await call('POST', '/api/rooms', { number: 401, capacity: 2, orientation: 'vista interior' }, s);
+  assert.equal(v.status, 201);
+  assert.equal((await call('POST', '/api/rooms', { number: 402, capacity: 2, orientation: 'techo' }, s)).status, 400);
+  const go = (ps) => call('POST', '/api/assignments', { room_ids: [v.body.id], passengers: ps }, s);
+  const two = [{ ...P('Ana Pérez', R('11111111')), is_responsible: true }, { ...P('Luis Soto', R('22222222')), is_responsible: true }];
+  assert.equal((await go(two)).status, 400); // dos responsables
+  assert.equal((await go(two.map((p) => ({ ...p, is_responsible: false })))).status, 400); // ninguno
 });

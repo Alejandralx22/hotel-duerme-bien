@@ -35,17 +35,21 @@ export function normalizeRut(rut) {
   return expected === dv ? c : null;
 }
 
-// A07 Fallas de autenticación: bloqueo tras 5 intentos fallidos por 15 min
+// A07 Fallas de autenticación: bloqueo de 15 min tras 5 fallos consecutivos, por usuario o por IP
 const attempts = new Map();
 const MAX = 5, LOCK_MS = 15 * 60 * 1000;
-export function checkLock(key) {
-  const a = attempts.get(key);
-  if (a && a.until > Date.now()) throw new HttpError(429, 'Demasiados intentos. Intente más tarde.');
+export function checkLock(keys) {
+  if (keys.some((k) => (attempts.get(k)?.until ?? 0) > Date.now()))
+    throw new HttpError(429, 'Demasiados intentos fallidos. Intente nuevamente en 15 minutos.');
 }
-export function registerFail(key) {
-  const a = attempts.get(key) ?? { n: 0, until: 0 };
-  a.n += 1;
-  if (a.n >= MAX) { a.until = Date.now() + LOCK_MS; a.n = 0; }
-  attempts.set(key, a);
+export function registerFail(keys) {
+  if (attempts.size > 10_000) attempts.clear(); // evita crecimiento ilimitado de memoria
+  for (const k of keys) {
+    const a = attempts.get(k) ?? { n: 0, until: 0 };
+    a.n += 1;
+    if (a.n >= MAX) { a.until = Date.now() + LOCK_MS; a.n = 0; }
+    attempts.set(k, a);
+  }
 }
-export const clearFails = (key) => attempts.delete(key);
+export const clearFails = (keys) => keys.forEach((k) => attempts.delete(k)); // "consecutivos": un acceso correcto reinicia
+export const resetAttempts = () => attempts.clear(); // solo para pruebas
