@@ -1,8 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 export const ORIENTATIONS = ['norte', 'sur', 'este', 'oeste', 'vista interior', 'vista exterior'];
-export const AUDIT_ACTIONS = ['login', 'logout', 'create_room', 'delete_room', 'assign_passengers', 'checkout', 'create_user'];
+export const AUDIT_ACTIONS = ['login', 'logout', 'create_room', 'delete_room', 'assign_passengers', 'checkout', 'create_user', 'change_password', 'reset_password'];
 const inList = (a) => a.map((x) => `'${x}'`).join(',');
 
 export function openDb(file = ':memory:') {
@@ -16,11 +16,17 @@ export function openDb(file = ':memory:') {
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
       password_hash TEXT NOT NULL,
+      email TEXT UNIQUE COLLATE NOCASE,
+      must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0,1)),
       role TEXT NOT NULL CHECK (role IN ('admin','encargado')),
       created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS sessions (
       token_hash TEXT PRIMARY KEY, csrf_token TEXT NOT NULL,
       user_id INTEGER NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS login_challenges (
+      token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
+      code_salt TEXT NOT NULL, code_hash TEXT NOT NULL, expires_at INTEGER NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0, resends INTEGER NOT NULL DEFAULT 0, last_sent_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS rooms (
       id INTEGER PRIMARY KEY, number INTEGER NOT NULL,
       capacity INTEGER NOT NULL CHECK (capacity BETWEEN 1 AND 10),

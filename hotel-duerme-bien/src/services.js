@@ -1,5 +1,6 @@
 // Capa de negocio: reglas del caso Hotel "Duerme Bien"
-import { HttpError, normalizeRut, validName } from './security.js';
+import { randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
+import { HttpError, normalizeRut, validName, hashPassword, verifyPassword, validPassword, validUsername, sha256 } from './security.js';
 import { ORIENTATIONS, AUDIT_ACTIONS } from './db.js';
 
 export const COST_PER_PASSENGER = 40000;
@@ -101,4 +102,93 @@ export function listAudit(db, q = {}) {
   const rows = db.prepare(`SELECT id, username, action, details, ip_address, timestamp FROM audit_log ${w}
     ORDER BY id DESC LIMIT ? OFFSET ?`).all(...args, limit, (page - 1) * limit);
   return { rows, total, page, pages: Math.max(1, Math.ceil(total / limit)) };
+}
+
+// ---------- Cuentas: usuarios, contraseñas y verificación por correo ----------
+const POLICY = 'Contraseña: mínimo 10 caracteres con letras y números';
+const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/;
+export const validEmail = (e, domain) => typeof e === 'string' && e.length <= 120 && EMAIL_RE.test(e)
+  && (!domain || e.toLowerCase().endsWith('@' + domain.toLowerCase()));
+export const maskEmail = (e) => e.replace(/^(.).*(@.*)$/, '$1***$2');
+
+export function addUser(db, { username, password, email } = {}, { mfa = false, domain = null } = {}) {
+  if (!validUsername(username)) throw new HttpError(400, 'Usuario inválido (3-30 caracteres alfanuméricos . _ -)');
+  if (!validPassword(password)) throw new HttpError(400, POLICY);
+  const has = email !== undefined && email !== null && email !== '';
+  if ((has || mfa) && !validEmail(email, domain))
+    throw new HttpError(400, domain ? `Ingrese un correo de la empresa (@${domain})` : 'Ingrese un correo válido');
+  if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw new HttpError(409, 'El usuario ya existe');
+  const mail = has ? email.trim().toLowerCase() : null;
+  if (mail && db.prepare('SELECT 1 FROM users WHERE email = ?').get(mail)) throw new HttpError(409, 'Ese correo ya está registrado');
+  // la clave inicial es temporal: el usuario debe cambiarla en su primer ingreso
+  db.prepare('INSERT INTO users (username,password_hash,email,must_change_password,role,created_at) VALUES (?,?,?,?,?,?)')
+    .run(username, hashPassword(password), mail, 1, 'encargado', new Date().toISOString());
+  return { username, email: mail, role: 'encargado' };
+}
+
+export function resetPassword(db, id, password) {
+  const t = db.prepare('SELECT id, username, role FROM users WHERE id = ?').get(id);
+  if (!t) throw new HttpError(404, 'Usuario no encontrado');
+  if (t.role !== 'encargado') throw new HttpError(400, 'Solo se pueden restablecer claves de Encargados');
+  if (!validPassword(password)) throw new HttpError(400, POLICY);
+  db.prepare('UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?').run(hashPassword(password), id);
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id); // cierra sus sesiones abiertas
+  db.prepare('DELETE FROM login_challenges WHERE user_id = ?').run(id);
+  return t;
+}
+
+export function changePassword(db, session, { current_password, new_password } = {}) {
+  const u = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(session.id);
+  if (typeof current_password !== 'string' || !verifyPassword(current_password, u.password_hash)) {
+    const e = new HttpError(400, 'La contraseña actual es incorrecta'); e.wrongCurrent = true; throw e;
+  }
+  if (!validPassword(new_password)) throw new HttpError(400, POLICY);
+  if (new_password === current_password) throw new HttpError(400, 'La nueva contraseña debe ser distinta a la actual');
+  db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(hashPassword(new_password), session.id);
+  db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(session.id, session.token_hash); // cierra las demás sesiones
+}
+
+const CODE_TTL = 10 * 60 * 1000, RESEND_MS = 60 * 1000, MAX_TRIES = 5, MAX_RESENDS = 3;
+async function sendCode(db, mailer, user, tokenHash, code) {
+  try {
+    await mailer({ to: user.email, subject: 'Código de verificación - Hotel Duerme Bien',
+      text: `Su código de verificación es ${code}.\nVence en 10 minutos. Si usted no intentó ingresar, ignore este mensaje y avise al administrador.` });
+  } catch (e) {
+    console.error('Error enviando el correo:', e.message);
+    db.prepare('DELETE FROM login_challenges WHERE token_hash = ?').run(tokenHash);
+    throw new HttpError(502, 'No se pudo enviar el código al correo. Intente nuevamente.');
+  }
+}
+const newCode = () => { const salt = randomBytes(8).toString('hex'), code = String(randomInt(0, 1_000_000)).padStart(6, '0'); return { salt, code, hash: sha256(salt + code) }; };
+
+export async function startChallenge(db, user, mailer) {
+  const token = randomBytes(32).toString('hex'), { salt, code, hash } = newCode(), now = Date.now();
+  db.prepare('DELETE FROM login_challenges WHERE user_id = ? OR expires_at < ?').run(user.id, now);
+  db.prepare('INSERT INTO login_challenges (token_hash,user_id,code_salt,code_hash,expires_at,last_sent_at) VALUES (?,?,?,?,?,?)')
+    .run(sha256(token), user.id, salt, hash, now + CODE_TTL, now);
+  await sendCode(db, mailer, user, sha256(token), code);
+  return token;
+}
+export const findChallenge = (db, token) => (typeof token === 'string' && /^[a-f0-9]{64}$/.test(token)
+  ? db.prepare(`SELECT c.*, u.username, u.email, u.role, u.must_change_password FROM login_challenges c
+      JOIN users u ON u.id = c.user_id WHERE c.token_hash = ?`).get(sha256(token)) ?? null : null);
+
+export function verifyChallenge(db, row, code) {
+  const bad = () => new HttpError(401, 'Código inválido o vencido'), del = () => db.prepare('DELETE FROM login_challenges WHERE token_hash = ?').run(row.token_hash);
+  if (!row || row.expires_at < Date.now()) { if (row) del(); throw bad(); }
+  if (row.attempts + 1 >= MAX_TRIES) del(); else db.prepare('UPDATE login_challenges SET attempts = attempts + 1 WHERE token_hash = ?').run(row.token_hash);
+  const c = String(code ?? '');
+  if (!/^\d{6}$/.test(c) || !timingSafeEqual(Buffer.from(sha256(row.code_salt + c), 'hex'), Buffer.from(row.code_hash, 'hex'))) throw bad();
+  del(); // el código es de un solo uso
+  return { id: row.user_id, username: row.username, role: row.role, must_change_password: row.must_change_password };
+}
+
+export async function resendChallenge(db, row, mailer) {
+  if (!row || row.expires_at < Date.now()) throw new HttpError(401, 'La verificación venció. Inicie sesión nuevamente.');
+  if (Date.now() - row.last_sent_at < RESEND_MS) throw new HttpError(429, 'Espere un minuto antes de pedir otro código.');
+  if (row.resends >= MAX_RESENDS) throw new HttpError(429, 'Límite de reenvíos alcanzado. Inicie sesión nuevamente.');
+  const { salt, code, hash } = newCode(), now = Date.now();
+  db.prepare('UPDATE login_challenges SET code_salt=?, code_hash=?, expires_at=?, attempts=0, resends=resends+1, last_sent_at=? WHERE token_hash=?')
+    .run(salt, hash, now + CODE_TTL, now, row.token_hash);
+  await sendCode(db, mailer, row, row.token_hash, code);
 }

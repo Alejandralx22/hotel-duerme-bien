@@ -1,8 +1,11 @@
-// Cliente SPA. Datos dinámicos solo con createElement/textContent (nunca innerHTML) - OWASP A03
+// Cliente SPA. Los datos dinámicos se escriben solo con createElement/textContent (nunca innerHTML) - OWASP A03
+const ROLE = { admin: 'Administrador', encargado: 'Encargado de Hotel' };
 const ORIENTATIONS = ['norte', 'sur', 'este', 'oeste', 'vista interior', 'vista exterior'];
-const ACTIONS = ['login', 'logout', 'create_user', 'create_room', 'delete_room', 'assign_passengers', 'checkout'];
+const ACTIONS = { login: 'Inicio de sesión', logout: 'Cierre de sesión', create_user: 'Creación de usuario', create_room: 'Alta de habitación',
+  delete_room: 'Baja de habitación', assign_passengers: 'Asignación de pasajeros', checkout: 'Check-out',
+  change_password: 'Cambio de contraseña', reset_password: 'Restablecimiento de contraseña' };
 const COST = 40000;
-let session = null, tab = 'rooms';
+let session = null, tab = 'rooms', timer = null, cfg = { mfa: false, email_domain: null };
 const audit = { page: 1, action: '', username: '' };
 const $ = (id) => document.getElementById(id);
 const app = $('app');
@@ -12,146 +15,250 @@ function h(tag, props = {}, ...kids) {
   for (const [k, v] of Object.entries(props)) {
     if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
     else if (k === 'class') e.className = v;
+    else if (k === 'disabled') e.disabled = !!v;
     else e.setAttribute(k, v);
   }
   for (const c of kids.flat()) if (c !== null && c !== undefined && c !== false) e.append(c instanceof Node ? c : document.createTextNode(String(c)));
   return e;
 }
 async function api(method, url, body) {
-  const r = await fetch(url, {
-    method, credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', ...(session ? { 'X-CSRF-Token': session.csrf } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await r.json();
-  if (r.status === 401 && session) { session = null; loginView(); throw new Error('Sesión expirada'); }
-  if (!r.ok) throw new Error(data.error || 'Error');
+  let r;
+  try {
+    r = await fetch(url, { method, credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', ...(session ? { 'X-CSRF-Token': session.csrf } : {}) },
+      body: body ? JSON.stringify(body) : undefined });
+  } catch { throw new Error('No se pudo conectar con el servidor'); }
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401 && session) { stopTimer(); session = null; loginView('Su sesión expiró. Ingrese nuevamente.'); throw new Error('Sesión expirada'); }
+  if (!r.ok) { const err = new Error(data.error || 'Error inesperado'); err.status = r.status; err.code = data.code; throw err; }
   return data;
 }
-const note = (el, text, ok) => el.replaceChildren(h('div', { class: 'msg ' + (ok ? 'okm' : 'err'), role: 'alert' }, text));
+const stopTimer = () => { if (timer) clearInterval(timer); timer = null; };
+const note = (el, text, kind = 'err') => el.replaceChildren(h('div', { class: 'msg ' + (kind === 'ok' ? 'okm' : kind), role: 'alert' }, text));
 const table = (cols, rows) => h('div', { class: 'tw' }, h('table', {}, h('thead', {}, h('tr', {}, cols.map(([t]) => h('th', {}, t)))),
   h('tbody', {}, rows.map((r) => h('tr', {}, cols.map(([, f]) => h('td', {}, f(r))))))));
-const badge = (status) => h('span', { class: 'badge ' + status }, status === 'vacante' ? 'Vacante' : 'Ocupada');
+const stateCell = (s) => [h('span', { class: 'dot ' + s }), h('span', { class: 'badge ' + s }, s === 'vacante' ? 'Vacante' : 'Ocupada')];
 const money = (n) => '$' + n.toLocaleString('es-CL');
 const when = (iso) => new Date(iso).toLocaleString('es-CL');
 
-function loginView() {
-  $('who').replaceChildren();
-  const msg = h('div');
+// Lista de requisitos de contraseña que se marcan mientras se escribe (el servidor valida igual)
+function pwRules(input) {
+  const rules = [['Mínimo 10 caracteres', (v) => v.length >= 10], ['Incluye letras', (v) => /[A-Za-z]/.test(v)], ['Incluye números', (v) => /\d/.test(v)]];
+  const ul = h('ul', { class: 'rules' }, rules.map(([t]) => h('li', { class: 'bad' }, '○ ' + t)));
+  input.addEventListener('input', () => rules.forEach(([t, f], i) => { const ok = f(input.value); ul.children[i].className = ok ? 'ok' : 'bad'; ul.children[i].textContent = (ok ? '✓ ' : '○ ') + t; }));
+  return ul;
+}
+
+// Validador de RUT (módulo 11), solo para dar retroalimentación inmediata; el servidor valida de nuevo
+function rutNorm(v) {
+  const c = String(v).replace(/[.\s]/g, '').toUpperCase();
+  if (!/^\d{7,8}-[\dK]$/.test(c)) return null;
+  const [b, dv] = c.split('-'); let s = 0, m = 2;
+  for (let i = b.length - 1; i >= 0; i--) { s += +b[i] * m; m = m === 7 ? 2 : m + 1; }
+  const r = 11 - (s % 11);
+  return (r === 11 ? '0' : r === 10 ? 'K' : String(r)) === dv ? c : null;
+}
+
+function loginView(info) {
+  stopTimer(); $('who').replaceChildren();
+  const msg = h('div'); if (info) note(msg, info, 'ok');
   const u = h('input', { placeholder: 'Usuario', autocomplete: 'username', 'aria-label': 'Usuario' });
   const p = h('input', { type: 'password', placeholder: 'Contraseña', autocomplete: 'current-password', 'aria-label': 'Contraseña' });
+  const finish = (sess) => { session = sess; tab = sess.role === 'admin' ? 'users' : 'dashboard'; render(); };
+  const codeStep = (res) => { // segundo paso: código enviado al correo de la empresa
+    const m2 = h('div'), code = h('input', { placeholder: 'Código de 6 dígitos', inputmode: 'numeric', maxlength: '6', autocomplete: 'one-time-code', 'aria-label': 'Código de verificación' });
+    const verify = async () => { try { finish(await api('POST', '/api/login/verify', { challenge: res.challenge, code: code.value.trim() })); }
+      catch (e) { note(m2, e.status === 429 ? '🔒 ' + e.message : e.message, e.status === 429 ? 'lock' : 'err'); } };
+    const resend = async () => { try { await api('POST', '/api/login/resend', { challenge: res.challenge }); note(m2, 'Enviamos un nuevo código a su correo.', 'ok'); }
+      catch (e) { note(m2, e.message, e.status === 429 ? 'lock' : 'err'); } };
+    code.addEventListener('keydown', (e) => e.key === 'Enter' && verify());
+    app.replaceChildren(h('section', { class: 'login' }, h('h2', {}, 'Verificación en dos pasos'),
+      h('p', { class: 'hint' }, `Enviamos un código de 6 dígitos al correo ${res.email_hint}. Vence en 10 minutos.`), code,
+      h('button', { onclick: verify }, 'Verificar'), h('button', { class: 'sec', onclick: resend }, 'Reenviar código'), h('button', { class: 'sec', onclick: () => loginView() }, 'Volver'), m2));
+    code.focus();
+  };
   const go = async () => {
-    try { session = await api('POST', '/api/login', { username: u.value, password: p.value }); tab = session.role === 'admin' ? 'users' : 'rooms'; render(); }
-    catch (e) { note(msg, e.message); }
+    try { const res = await api('POST', '/api/login', { username: u.value, password: p.value }); if (res.mfa) codeStep(res); else finish(res); }
+    catch (e) {
+      if (e.status === 429) note(msg, '🔒 Acceso bloqueado por 15 minutos tras 5 intentos fallidos consecutivos. Intente más tarde.', 'lock');
+      else note(msg, e.message);
+    }
   };
   p.addEventListener('keydown', (e) => e.key === 'Enter' && go());
-  app.replaceChildren(h('section', { class: 'login' }, h('h2', {}, 'Iniciar sesión'), u, p, h('button', { onclick: go }, 'Ingresar'), msg));
+  app.replaceChildren(h('section', { class: 'login' }, h('h2', {}, 'Acceso del personal'),
+    h('p', { class: 'hint' }, 'Solo personal autorizado. No existe registro público.'), u, p, h('button', { onclick: go }, 'Ingresar'), msg));
+  u.focus();
 }
 
 async function render() {
-  $('who').replaceChildren(`${session.username} (${session.role}) `,
-    h('button', { class: 'sec', onclick: async () => { try { await api('POST', '/api/logout'); } finally { session = null; loginView(); } } }, 'Salir'));
+  stopTimer();
+  $('who').replaceChildren(h('span', { class: 'user' }, session.username), h('span', { class: 'badge role-' + session.role }, ROLE[session.role]),
+    h('button', { onclick: async () => { try { await api('POST', '/api/logout'); } catch { /* igual se limpia la sesión local */ } session = null; audit.page = 1; audit.action = ''; audit.username = ''; loginView('Sesión cerrada correctamente.'); } }, 'Cerrar sesión'));
   const tabs = session.role === 'admin'
-    ? [['users', 'Usuarios'], ['audit', 'Auditoría'], ['rooms', 'Habitaciones'], ['guests', 'Pasajeros']]
-    : [['rooms', 'Habitaciones'], ['assign', 'Check-in'], ['guests', 'Pasajeros hospedados']];
+    ? [['users', 'Usuarios'], ['audit', 'Auditoría']]
+    : [['dashboard', 'Estado del Hotel'], ['rooms', 'Habitaciones'], ['assign', 'Asignación / Check-in']];
+  if (session.must_change) tab = 'password'; // clave temporal: no puede usar el sistema hasta cambiarla
+  else tabs.push(['password', 'Cambiar contraseña']);
   const body = h('div');
-  app.replaceChildren(h('nav', {}, tabs.map(([k, t]) => h('button', { class: k === tab ? 'on' : '', onclick: () => { tab = k; render(); } }, t))), body);
+  app.replaceChildren(h('nav', {}, (session.must_change ? [['password', 'Cambiar contraseña']] : tabs).map(([k, t]) => h('button', { class: k === tab ? 'on' : '', onclick: () => { tab = k; render(); } }, t))), body);
   try { await views[tab](body); } catch (e) { if (session) note(body, e.message); }
 }
 
 const views = {
-  async rooms(body) {
-    const rooms = await api('GET', '/api/rooms'), msg = h('div'), enc = session.role === 'encargado';
-    const num = h('input', { type: 'number', placeholder: 'N° hab.', min: 1, max: 9999, 'aria-label': 'Número' });
-    const cap = h('input', { type: 'number', placeholder: 'Capacidad (1-10)', min: 1, max: 10, 'aria-label': 'Capacidad' });
-    const ori = h('select', { 'aria-label': 'Orientación' }, ORIENTATIONS.map((o) => h('option', {}, o)));
-    const form = enc ? h('section', {}, h('h2', {}, 'Registrar habitación'), num, cap, ori,
-      h('button', { onclick: async () => { try { await api('POST', '/api/rooms', { number: +num.value, capacity: +cap.value, orientation: ori.value }); render(); } catch (e) { note(msg, e.message); } } }, 'Agregar'), msg) : '';
-    const cards = rooms.map((r) => h('div', { class: 'room ' + r.status },
-      h('h3', {}, 'Habitación ' + r.number), badge(r.status),
-      h('p', {}, `Capacidad: ${r.capacity}`), h('p', {}, `Orientación: ${r.orientation}`), h('p', {}, `Huéspedes: ${r.guests}`),
-      enc ? h('button', { class: 'del', onclick: async () => { try { await api('DELETE', '/api/rooms/' + r.id); render(); } catch (e) { note(msg2, e.message); } } }, 'Eliminar') : ''));
-    const msg2 = h('div');
-    body.replaceChildren(form, h('section', {}, h('h2', {}, 'Estado de habitaciones'), msg2,
-      cards.length ? h('div', { class: 'grid' }, cards) : h('p', {}, 'No hay habitaciones registradas.')));
+  // RF15 y RF16: estado de habitaciones y pasajeros hospedados
+  async dashboard(body) {
+    const [rooms, guests] = await Promise.all([api('GET', '/api/rooms'), api('GET', '/api/passengers')]), msg = h('div');
+    const vac = rooms.filter((r) => r.status === 'vacante').length;
+    const tile = (cls, n, label) => h('div', { class: 'tile ' + cls }, h('b', {}, n), label);
+    const roomCols = [['N°', (r) => r.number], ['Capacidad', (r) => r.capacity], ['Orientación', (r) => r.orientation], ['Estado', (r) => stateCell(r.status)], ['Huéspedes', (r) => r.guests]];
+    const guestCols = [['Hab.', (r) => r.room], ['Pasajero', (r) => r.name], ['RUT', (r) => r.rut],
+      ['Responsable', (r) => (r.responsible ? h('span', { class: 'badge resp' }, 'Responsable') : '')],
+      ['Ingreso', (r) => when(r.created_at)], ['Costo total del grupo', (r) => money(r.total_cost)],
+      ['', (r) => (r.responsible ? h('button', { class: 'out', title: 'Libera todas las habitaciones del grupo', onclick: async () => {
+        if (!confirm(`¿Confirmar check-out del grupo de ${r.name}? Se liberarán sus habitaciones.`)) return;
+        try { await api('POST', `/api/assignments/${r.assignment_id}/checkout`); render(); } catch (e) { note(msg, e.message); } } }, 'Check-out') : '')]];
+    body.replaceChildren(
+      h('div', { class: 'tiles' }, tile('vac', vac, 'Habitaciones vacantes'), tile('occ', rooms.length - vac, 'Habitaciones ocupadas'), tile('', guests.length, 'Pasajeros hospedados')),
+      h('section', {}, h('h2', {}, 'Estado de habitaciones'), rooms.length ? table(roomCols, rooms) : h('p', {}, 'No hay habitaciones registradas.')),
+      h('section', {}, h('h2', {}, 'Pasajeros hospedados'), msg, guests.length ? table(guestCols, guests) : h('p', {}, 'No hay pasajeros hospedados.')));
   },
 
+  // RF06, RF07, RF08: alta y baja lógica de habitaciones
+  async rooms(body) {
+    const rooms = await api('GET', '/api/rooms'), msg = h('div'), msg2 = h('div');
+    const num = h('input', { type: 'number', placeholder: 'N° de habitación', min: 1, max: 9999, 'aria-label': 'Número de habitación' });
+    const cap = h('input', { type: 'number', placeholder: 'Capacidad (1 a 10)', min: 1, max: 10, 'aria-label': 'Capacidad' });
+    const ori = h('select', { 'aria-label': 'Orientación' }, ORIENTATIONS.map((o) => h('option', {}, o)));
+    const add = async () => { try { await api('POST', '/api/rooms', { number: +num.value, capacity: +cap.value, orientation: ori.value }); render(); } catch (e) { note(msg, e.message); } };
+    const cols = [['N°', (r) => r.number], ['Capacidad', (r) => r.capacity], ['Orientación', (r) => r.orientation], ['Estado', (r) => stateCell(r.status)],
+      ['', (r) => h('button', { class: 'del', onclick: async () => { if (!confirm(`¿Eliminar la habitación ${r.number}?`)) return;
+        try { await api('DELETE', '/api/rooms/' + r.id); render(); } catch (e) { note(msg2, e.message); } } }, 'Eliminar')]];
+    body.replaceChildren(
+      h('section', {}, h('h2', {}, 'Registrar habitación'), num, cap, ori, h('button', { onclick: add }, 'Agregar habitación'), msg),
+      h('section', {}, h('h2', {}, 'Habitaciones activas'),
+        h('p', { class: 'hint' }, 'Una habitación con pasajeros activos no se puede eliminar: primero haga el check-out. La baja es lógica y conserva el historial.'),
+        msg2, rooms.length ? table(cols, rooms) : h('p', {}, 'No hay habitaciones registradas.')));
+  },
+
+  // RF09 a RF14: asignación de pasajeros / check-in
   async assign(body) {
     const free = (await api('GET', '/api/rooms')).filter((r) => r.status === 'vacante'), msg = h('div');
     const picks = free.map((r) => ({ r, cb: h('input', { type: 'checkbox' }) }));
-    const rowsBox = h('div'), info = h('div', { class: 'msg okm' });
-    const people = []; // { name, rut, resp, el }
+    const rowsBox = h('div'), sum = h('div', { class: 'sum' }), people = [];
     const need = () => picks.filter((p) => p.cb.checked).reduce((s, p) => s + p.r.capacity, 0);
+    const checkRuts = () => { // retroalimentación visual: RUT válido / inválido / repetido (con o sin puntos)
+      const seen = new Map(); people.forEach((p) => { const n = rutNorm(p.rut.value); if (n) seen.set(n, (seen.get(n) ?? 0) + 1); });
+      people.forEach((p) => {
+        const v = p.rut.value.trim(), n = rutNorm(v);
+        p.hint.className = !v ? 'hint' : n && seen.get(n) === 1 ? 'vok' : 'vbad';
+        p.hint.textContent = !v ? 'Formato 12345678-5' : !n ? '✗ RUT inválido' : seen.get(n) > 1 ? '✗ RUT repetido' : '✓ RUT válido';
+      });
+    };
     const addRow = () => {
       const n = people.length + 1;
-      const name = h('input', { type: 'text', placeholder: `Pasajero ${n}: nombre completo`, 'aria-label': `Nombre pasajero ${n}` });
-      const rut = h('input', { type: 'text', placeholder: 'RUT 12345678-5', 'aria-label': `RUT pasajero ${n}` });
+      const name = h('input', { type: 'text', placeholder: `Pasajero ${n}: nombre completo`, 'aria-label': `Nombre del pasajero ${n}` });
+      const rut = h('input', { type: 'text', placeholder: 'RUT (12345678-5)', 'aria-label': `RUT del pasajero ${n}` });
       const resp = h('input', { type: 'radio', name: 'resp', 'aria-label': `Responsable: pasajero ${n}` });
-      const el = h('div', { class: 'prow' }, h('label', {}, resp, ' Responsable'), name, rut);
-      people.push({ name, rut, resp, el }); rowsBox.append(el);
+      const hint = h('span', { class: 'hint' }, 'Formato 12345678-5');
+      rut.addEventListener('input', checkRuts);
+      const el = h('div', { class: 'prow' }, h('label', {}, resp, ' Responsable'), name, rut, hint);
+      people.push({ name, rut, resp, hint, el }); rowsBox.append(el);
     };
-    const sync = () => { // un formulario por pasajero, según la capacidad seleccionada
+    const sync = () => { // un formulario por pasajero según la capacidad seleccionada
       const n = need();
       while (people.length < n) addRow();
       while (people.length > n) people.pop().el.remove();
       if (people.length && !people.some((p) => p.resp.checked)) people[0].resp.checked = true;
-      info.textContent = n ? `Capacidad seleccionada: ${n} · Pasajeros a ingresar: ${n} · Costo total: ${money(n * COST)} (${money(COST)} × ${n})`
-        : 'Seleccione una o más habitaciones vacantes.';
+      checkRuts();
+      sum.replaceChildren(n ? h('div', {}, `Resumen de cobro: ${n} pasajero${n > 1 ? 's' : ''} × ${money(COST)} = `, h('b', {}, money(n * COST)),
+        h('div', { class: 'hint' }, 'La fecha y hora de ingreso se registran automáticamente al confirmar.')) : 'Seleccione una o más habitaciones vacantes.');
     };
-    picks.forEach((p) => p.cb.addEventListener('change', sync));
-    sync();
+    picks.forEach((p) => p.cb.addEventListener('change', sync)); sync();
     const send = async () => {
       try {
         const res = await api('POST', '/api/assignments', {
           room_ids: picks.filter((p) => p.cb.checked).map((p) => p.r.id),
           passengers: people.map((p) => ({ name: p.name.value, rut: p.rut.value, is_responsible: p.resp.checked })) });
-        note(msg, `Check-in #${res.id} registrado. Total: ${money(res.total_cost)}`, true);
-        setTimeout(render, 1500);
+        note(msg, `Check-in #${res.id} registrado en habitación(es) ${res.rooms.join(', ')}. Total a cobrar: ${money(res.total_cost)}`, 'ok');
+        setTimeout(() => { tab = 'dashboard'; render(); }, 1800);
       } catch (e) { note(msg, e.message); }
     };
-    body.replaceChildren(h('section', {}, h('h2', {}, 'Formulario de asignación / Check-in'),
-      free.length ? h('p', {}, 'Habitaciones disponibles (si el grupo excede la mayor habitación libre puede elegir varias):') : h('p', {}, 'No hay habitaciones vacantes.'),
+    body.replaceChildren(h('section', {}, h('h2', {}, 'Asignación de pasajeros / Check-in'),
+      free.length ? h('p', { class: 'hint' }, 'Elija una habitación vacante. Solo puede elegir varias si el grupo excede la mayor habitación libre.') : h('p', {}, 'No hay habitaciones vacantes.'),
       picks.map((p) => h('label', { class: 'pick' }, p.cb, ` N°${p.r.number} · capacidad ${p.r.capacity} · ${p.r.orientation}`)),
-      rowsBox, info, h('button', { onclick: send }, 'Registrar check-in'), msg));
+      rowsBox, sum, h('button', { onclick: send }, 'Confirmar check-in'), msg));
   },
 
-  async guests(body) {
-    const g = await api('GET', '/api/passengers'), msg = h('div');
-    const cols = [['Hab.', (r) => r.room], ['Pasajero', (r) => r.name], ['RUT', (r) => r.rut], ['Responsable', (r) => (r.responsible ? 'Sí' : '')],
-      ['Ingreso', (r) => when(r.created_at)], ['Costo grupo', (r) => money(r.total_cost)]];
-    if (session.role === 'encargado') cols.push(['', (r) => (r.responsible ? h('button', { class: 'sec', onclick: async () => {
-      try { await api('POST', `/api/assignments/${r.assignment_id}/checkout`); render(); } catch (e) { note(msg, e.message); } } }, 'Check-out') : '')]);
-    body.replaceChildren(h('section', {}, h('h2', {}, 'Pasajeros hospedados'), g.length ? table(cols, g) : h('p', {}, 'No hay pasajeros hospedados.'), msg));
-  },
-
+  // RF05: registro de Encargados, con correo de la empresa; restablecimiento de contraseña
   async users(body) {
-    const list = await api('GET', '/api/users'), msg = h('div');
-    const u = h('input', { placeholder: 'Usuario (3-30, letras/números . _ -)', 'aria-label': 'Usuario nuevo' });
-    const p = h('input', { type: 'password', placeholder: 'Contraseña (10+ con letras y números)', 'aria-label': 'Contraseña nueva' });
-    body.replaceChildren(h('section', {}, h('h2', {}, 'Registrar Encargado de Hotel'), u, p,
-      h('button', { onclick: async () => {
-        if (p.value.length < 10 || !/[A-Za-z]/.test(p.value) || !/\d/.test(p.value)) return note(msg, 'La contraseña debe tener mínimo 10 caracteres con letras y números');
-        try { await api('POST', '/api/users', { username: u.value, password: p.value }); render(); } catch (e) { note(msg, e.message); } } }, 'Crear'), msg),
-      h('section', {}, h('h2', {}, 'Usuarios'), table([['Usuario', (r) => r.username], ['Rol', (r) => r.role], ['Creado', (r) => when(r.created_at)]], list)));
+    const list = await api('GET', '/api/users'), msg = h('div'), box = h('div');
+    const u = h('input', { placeholder: 'Usuario (3 a 30: letras, números . _ -)', 'aria-label': 'Usuario nuevo' });
+    const em = h('input', { type: 'email', placeholder: cfg.email_domain ? `Correo @${cfg.email_domain}` : 'Correo de la empresa', autocomplete: 'off', 'aria-label': 'Correo de la empresa' });
+    const p = h('input', { type: 'password', placeholder: 'Contraseña temporal', autocomplete: 'new-password', 'aria-label': 'Contraseña temporal' });
+    const create = async () => { try { await api('POST', '/api/users', { username: u.value, email: em.value.trim(), password: p.value }); render(); } catch (e) { note(msg, e.message); } };
+    const reset = (r) => { // formulario para fijar una clave temporal nueva
+      const m3 = h('div'), np = h('input', { type: 'password', placeholder: 'Nueva contraseña temporal', autocomplete: 'new-password', 'aria-label': 'Nueva contraseña temporal' });
+      const ok = async () => { try { await api('POST', `/api/users/${r.id}/reset-password`, { password: np.value }); note(m3, `Clave de ${r.username} restablecida. Deberá cambiarla al ingresar.`, 'ok'); np.value = ''; } catch (e) { note(m3, e.message); } };
+      box.replaceChildren(h('section', {}, h('h2', {}, `Restablecer contraseña de ${r.username}`), np, pwRules(np), h('button', { onclick: ok }, 'Confirmar'),
+        h('button', { class: 'sec', onclick: () => box.replaceChildren() }, 'Cancelar'), m3));
+    };
+    body.replaceChildren(
+      h('section', {}, h('h2', {}, 'Registrar personal'),
+        h('p', { class: 'hint' }, 'Todo usuario nuevo recibe el perfil único de Encargado de Hotel y debe cambiar su contraseña temporal en el primer ingreso.'),
+        u, em, p, pwRules(p), h('button', { onclick: create }, 'Crear Encargado'), msg), box,
+      h('section', {}, h('h2', {}, 'Usuarios del sistema'),
+        table([['Usuario', (r) => r.username], ['Correo', (r) => r.email ?? '—'], ['Perfil', (r) => h('span', { class: 'badge role-' + r.role }, ROLE[r.role])],
+          ['Creado', (r) => when(r.created_at)], ['', (r) => (r.role === 'encargado' ? h('button', { class: 'sec', onclick: () => reset(r) }, 'Restablecer clave') : '')]], list)));
   },
 
+  // Cambio de contraseña propio (también obligatorio con clave temporal)
+  async password(body) {
+    const msg = h('div'), forced = session.must_change;
+    const cur = h('input', { type: 'password', placeholder: 'Contraseña actual', autocomplete: 'current-password', 'aria-label': 'Contraseña actual' });
+    const nw = h('input', { type: 'password', placeholder: 'Contraseña nueva', autocomplete: 'new-password', 'aria-label': 'Contraseña nueva' });
+    const rp = h('input', { type: 'password', placeholder: 'Repita la contraseña nueva', autocomplete: 'new-password', 'aria-label': 'Repetir contraseña nueva' });
+    const save = async () => {
+      if (nw.value !== rp.value) return note(msg, 'Las contraseñas nuevas no coinciden');
+      try {
+        await api('POST', '/api/password', { current_password: cur.value, new_password: nw.value });
+        note(msg, 'Contraseña actualizada. Las demás sesiones abiertas se cerraron.', 'ok');
+        if (forced) { session.must_change = false; tab = session.role === 'admin' ? 'users' : 'dashboard'; setTimeout(render, 1200); }
+        else [cur, nw, rp].forEach((i) => { i.value = ''; });
+      } catch (e) { note(msg, e.status === 429 ? '🔒 ' + e.message : e.message, e.status === 429 ? 'lock' : 'err'); }
+    };
+    body.replaceChildren(h('section', {}, h('h2', {}, 'Cambiar contraseña'),
+      forced ? h('div', { class: 'msg lock' }, 'Por seguridad debe cambiar su contraseña temporal antes de continuar.') : '',
+      cur, nw, pwRules(nw), rp, h('button', { onclick: save }, 'Guardar contraseña'), msg));
+  },
+
+  // Auditoría (ISO/IEC 27002): se actualiza sola cada 10 segundos
   async audit(body) {
-    const q = new URLSearchParams({ page: audit.page, limit: 15 });
-    if (audit.action) q.set('action', audit.action);
-    if (audit.username) q.set('username', audit.username);
-    const res = await api('GET', '/api/audit?' + q);
+    const out = h('div'), stamp = h('span', { class: 'hint' }), auto = h('input', { type: 'checkbox' }); auto.checked = true;
     const act = h('select', { 'aria-label': 'Filtrar por acción' }, h('option', { value: '' }, 'Todas las acciones'),
-      ACTIONS.map((a) => { const o = h('option', { value: a }, a); if (a === audit.action) o.selected = true; return o; }));
+      Object.entries(ACTIONS).map(([k, t]) => { const o = h('option', { value: k }, t); if (k === audit.action) o.selected = true; return o; }));
     const usr = h('input', { placeholder: 'Filtrar por usuario', value: audit.username, 'aria-label': 'Filtrar por usuario' });
-    const go = (page) => { audit.page = page; render(); };
-    const filter = () => { audit.action = act.value; audit.username = usr.value.trim(); go(1); };
+    const load = async () => {
+      const q = new URLSearchParams({ page: audit.page, limit: 15 });
+      if (audit.action) q.set('action', audit.action); if (audit.username) q.set('username', audit.username);
+      const res = await api('GET', '/api/audit?' + q);
+      if (!res.rows.length && res.page > 1) { audit.page = res.pages; return load(); }
+      const go = (n) => { audit.page = n; load().catch((e) => note(out, e.message)); };
+      const prev = h('button', { class: 'sec', disabled: res.page <= 1, onclick: () => go(res.page - 1) }, '← Anterior');
+      const next = h('button', { class: 'sec', disabled: res.page >= res.pages, onclick: () => go(res.page + 1) }, 'Siguiente →');
+      out.replaceChildren(res.rows.length ? table([['Fecha y hora', (r) => when(r.timestamp)], ['Usuario', (r) => r.username ?? '—'], ['Acción', (r) => ACTIONS[r.action] ?? r.action],
+        ['Detalle', (r) => r.details], ['IP', (r) => r.ip_address]], res.rows) : h('p', {}, 'No hay registros para el filtro elegido.'),
+        h('div', { class: 'pager' }, prev, `Página ${res.page} de ${res.pages} (${res.total} registros)`, next));
+      stamp.textContent = 'Última actualización: ' + new Date().toLocaleTimeString('es-CL');
+    };
+    const filter = () => { audit.action = act.value; audit.username = usr.value.trim(); audit.page = 1; load().catch((e) => note(out, e.message)); };
     usr.addEventListener('keydown', (e) => e.key === 'Enter' && filter());
-    const prev = h('button', { class: 'sec', onclick: () => go(res.page - 1) }, '← Anterior'), next = h('button', { class: 'sec', onclick: () => go(res.page + 1) }, 'Siguiente →');
-    if (res.page <= 1) prev.disabled = true; if (res.page >= res.pages) next.disabled = true;
     body.replaceChildren(h('section', {}, h('h2', {}, 'Bitácora de auditoría'), act, usr, h('button', { onclick: filter }, 'Filtrar'),
-      table([['Fecha y hora', (r) => when(r.timestamp)], ['Usuario', (r) => r.username ?? '—'], ['Acción', (r) => r.action], ['Detalle', (r) => r.details], ['IP', (r) => r.ip_address]], res.rows),
-      h('div', { class: 'pager' }, prev, `Página ${res.page} de ${res.pages} (${res.total} registros)`, next)));
+      h('button', { class: 'sec', onclick: () => load().catch((e) => note(out, e.message)) }, 'Actualizar ahora'),
+      h('label', { class: 'hint' }, auto, ' Actualizar cada 10 s '), stamp, out));
+    await load();
+    timer = setInterval(() => { if (auto.checked && session && tab === 'audit' && document.visibilityState === 'visible') load().catch(() => {}); }, 10000);
   },
 };
 
-(async () => { try { session = await api('GET', '/api/me'); render(); } catch { loginView(); } })();
+(async () => { try { cfg = await api('GET', '/api/config'); } catch { /* usa valores por defecto */ }
+  try { session = await api('GET', '/api/me'); tab = session.role === 'admin' ? 'users' : 'dashboard'; render(); } catch { loginView(); } })();
