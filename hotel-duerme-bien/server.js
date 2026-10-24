@@ -7,7 +7,7 @@ import { createApp } from './src/app.js';
 import { mailerFromEnv } from './src/mailer.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
-const DB_FILE = process.env.DB_FILE ?? './data/hotel.db';
+const DB_FILE = process.env.NODE_ENV === 'production' ? '/tmp/hotel.db' : (process.env.DB_FILE ?? './data/hotel.db');
 fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
 const db = openDb(DB_FILE);
 
