@@ -32,7 +32,26 @@ export function deleteRoom(db, id) {
   return room;
 }
 
-export function assign(db, userId, { room_ids, passengers } = {}) {
+// Fechas de la estadía (AAAA-MM-DD): inicio y término; el cobro es por persona y por noche
+const DAY = 86400000;
+const parseDay = (v) => {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+  const t = Date.parse(v + 'T00:00:00Z');
+  return Number.isNaN(t) || new Date(t).toISOString().slice(0, 10) !== v ? null : t; // rechaza fechas inexistentes (30-02)
+};
+function stayNights(start_date, end_date) {
+  const s = parseDay(start_date), e = parseDay(end_date);
+  if (s === null || e === null) throw new HttpError(400, 'Ingrese fechas válidas de inicio y término');
+  const today = parseDay(new Date().toISOString().slice(0, 10));
+  if (s < today - DAY) throw new HttpError(400, 'La fecha de inicio no puede ser anterior a ayer');
+  if (s > today + 730 * DAY) throw new HttpError(400, 'La fecha de inicio es demasiado lejana');
+  const nights = Math.round((e - s) / DAY);
+  if (nights < 1) throw new HttpError(400, 'La fecha de término debe ser posterior a la de inicio');
+  if (nights > 365) throw new HttpError(400, 'La estadía no puede superar 365 noches');
+  return nights;
+}
+
+export function assign(db, userId, { room_ids, passengers, start_date, end_date } = {}) {
   if (!Array.isArray(room_ids) || !room_ids.length || room_ids.length > 5 || !room_ids.every(Number.isInteger) || new Set(room_ids).size !== room_ids.length)
     throw new HttpError(400, 'Habitaciones inválidas');
   if (!Array.isArray(passengers) || !passengers.length || passengers.length > 50) throw new HttpError(400, 'Lista de pasajeros inválida');
@@ -49,6 +68,7 @@ export function assign(db, userId, { room_ids, passengers } = {}) {
     WHERE a.checkout_at IS NULL AND p.rut=?`);
   if (people.some((p) => hosted.get(p.rut))) throw new HttpError(409, 'Un pasajero ya se encuentra hospedado');
 
+  const nights = stayNights(start_date, end_date);
   const free = listRooms(db).filter((r) => r.guests === 0);
   const rooms = room_ids.map((id) => free.find((r) => r.id === id));
   if (rooms.some((r) => !r)) throw new HttpError(409, 'Alguna habitación no existe o está ocupada');
@@ -57,18 +77,18 @@ export function assign(db, userId, { room_ids, passengers } = {}) {
   if (rooms.length > 1 && people.length <= Math.max(...free.map((r) => r.capacity)))
     throw new HttpError(422, 'Solo se pueden reservar varias habitaciones si el grupo excede la habitación más grande disponible (RF13)');
 
-  const total = people.length * COST_PER_PASSENGER; // RF11
+  const total = people.length * nights * COST_PER_PASSENGER; // RF11: $40.000 por persona y por noche
   db.exec('BEGIN');
   try {
-    const a = db.prepare('INSERT INTO assignments (room_ids,total_cost,created_at,user_id) VALUES (?,?,?,?)')
-      .run(JSON.stringify(rooms.map((r) => r.id)), total, new Date().toISOString(), userId); // RF12
+    const a = db.prepare('INSERT INTO assignments (room_ids,total_cost,start_date,end_date,nights,created_at,user_id) VALUES (?,?,?,?,?,?,?)')
+      .run(JSON.stringify(rooms.map((r) => r.id)), total, start_date, end_date, nights, new Date().toISOString(), userId); // RF12
     const aid = Number(a.lastInsertRowid);
     const ins = db.prepare('INSERT INTO passengers (assignment_id,room_id,name,rut,is_responsible) VALUES (?,?,?,?,?)');
     let i = 0;
     for (const room of rooms) for (let k = 0; k < room.capacity; k++, i++)
       ins.run(aid, room.id, people[i].name, people[i].rut, people[i].resp ? 1 : 0);
     db.exec('COMMIT');
-    return { id: aid, total_cost: total, passengers: people.length, rooms: rooms.map((r) => r.number) };
+    return { id: aid, total_cost: total, passengers: people.length, nights, start_date, end_date, cost_per_person: nights * COST_PER_PASSENGER, rooms: rooms.map((r) => r.number) };
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 
@@ -80,9 +100,10 @@ export function checkout(db, id) {
 
 export const listGuests = (db) => db.prepare(`
   SELECT p.name, p.rut, r.number AS room, p.is_responsible AS responsible,
-         a.id AS assignment_id, a.total_cost, a.created_at
+         a.id AS assignment_id, a.total_cost, a.start_date, a.end_date, a.nights, a.created_at
   FROM passengers p JOIN assignments a ON a.id=p.assignment_id JOIN rooms r ON r.id=p.room_id
-  WHERE a.checkout_at IS NULL ORDER BY r.number`).all();
+  WHERE a.checkout_at IS NULL ORDER BY r.number`).all()
+  .map((r) => ({ ...r, cost_per_person: r.nights * COST_PER_PASSENGER }));
 
 // Bitácora paginada y filtrable (por acción y/o usuario)
 export function listAudit(db, q = {}) {

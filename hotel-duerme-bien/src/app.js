@@ -19,7 +19,10 @@ export function createApp(db, { secure = false, trustProxy = false, mfa = false,
   // Detrás de un proxy cloud la IP real viene en X-Forwarded-For (el último valor lo agrega el proxy)
   const clientIp = (req) => (trustProxy && req.headers['x-forwarded-for']
     ? String(req.headers['x-forwarded-for']).split(',').pop().trim() : req.socket.remoteAddress ?? '');
-  const cookie = (v, age) => `sid=${v}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${secure ? '; Secure' : ''}`;
+  // La cookie es Secure cuando la conexión es HTTPS (directa o detrás de un proxy cloud que envía X-Forwarded-Proto).
+  // Si se marcara Secure sobre http plano, el navegador la descartaría y el usuario volvería al ingreso en bucle.
+  const isHttps = (req) => !!req.socket.encrypted || String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() === 'https';
+  const cookie = (v, age, req) => `sid=${v}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${secure && isHttps(req) ? '; Secure' : ''}`;
 
   function getSession(req) {
     const m = /(?:^|;\s*)sid=([a-f0-9]{64})/.exec(req.headers.cookie ?? '');
@@ -40,7 +43,7 @@ export function createApp(db, { secure = false, trustProxy = false, mfa = false,
   const openSession = (c, u) => {
     const token = randomBytes(32).toString('hex'), csrf = randomBytes(16).toString('hex');
     db.prepare('INSERT INTO sessions (token_hash,user_id,csrf_token,expires_at) VALUES (?,?,?,?)').run(S.sha256(token), u.id, csrf, Date.now() + SESSION_MS);
-    c.res.setHeader('Set-Cookie', cookie(token, SESSION_MS / 1000));
+    c.res.setHeader('Set-Cookie', cookie(token, SESSION_MS / 1000, c.req));
     return { username: u.username, role: u.role, csrf, must_change: !!u.must_change_password };
   };
   const id = (p) => { const n = Number(p); if (!Number.isInteger(n)) throw new HttpError(400, 'Id inválido'); return n; };
@@ -68,7 +71,7 @@ export function createApp(db, { secure = false, trustProxy = false, mfa = false,
     ['POST', /^\/api\/logout$/, ['admin', 'encargado'], (c) => {
       db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(c.session.token_hash);
       audit(db, c.session, 'logout', '', c.ip);
-      c.res.setHeader('Set-Cookie', cookie('', 0));
+      c.res.setHeader('Set-Cookie', cookie('', 0, c.req));
       return { ok: true };
     }],
     ['GET', /^\/api\/me$/, ['admin', 'encargado'], (c) => ({ username: c.session.username, role: c.session.role, csrf: c.session.csrf, must_change: !!c.session.must_change })],
@@ -110,7 +113,7 @@ export function createApp(db, { secure = false, trustProxy = false, mfa = false,
       return { ok: true };
     }],
     ['GET', /^\/api\/audit$/, ['admin'], (c) => svc.listAudit(db, Object.fromEntries(c.url.searchParams))],
-    ['GET', /^\/api\/rooms$/, ['admin', 'encargado'], () => svc.listRooms(db)],
+    ['GET', /^\/api\/rooms$/, ['encargado'], () => svc.listRooms(db)],
     ['POST', /^\/api\/rooms$/, ['encargado'], (c) => {
       const r = svc.createRoom(db, c.body); audit(db, c.session, 'create_room', `#${r.number}`, c.ip); c.status = 201; return r;
     }],
@@ -123,7 +126,7 @@ export function createApp(db, { secure = false, trustProxy = false, mfa = false,
     ['POST', /^\/api\/assignments\/(\d+)\/checkout$/, ['encargado'], (c) => {
       svc.checkout(db, id(c.m[1])); audit(db, c.session, 'checkout', c.m[1], c.ip); return { ok: true };
     }],
-    ['GET', /^\/api\/passengers$/, ['admin', 'encargado'], () => svc.listGuests(db)],
+    ['GET', /^\/api\/passengers$/, ['encargado'], () => svc.listGuests(db)],
   ];
 
   async function api(req, res, url) {
@@ -166,7 +169,7 @@ export function createApp(db, { secure = false, trustProxy = false, mfa = false,
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    if (secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    if (secure && isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
     try {
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname.startsWith('/api/')) await api(req, res, url);

@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 
-const SCHEMA_VERSION = 3;
-export const ORIENTATIONS = ['norte', 'sur', 'este', 'oeste', 'vista interior', 'vista exterior'];
+const SCHEMA_VERSION = 4;
+export const ORIENTATIONS = ['vista al mar', 'vista a la ciudad']; // columna rooms.orientation: tipo de vista
 export const AUDIT_ACTIONS = ['login', 'logout', 'create_room', 'delete_room', 'assign_passengers', 'checkout', 'create_user', 'change_password', 'reset_password'];
 const inList = (a) => a.map((x) => `'${x}'`).join(',');
 
@@ -35,6 +35,7 @@ export function openDb(file = ':memory:') {
     CREATE UNIQUE INDEX IF NOT EXISTS ux_room_number ON rooms(number) WHERE deleted = 0;
     CREATE TABLE IF NOT EXISTS assignments (
       id INTEGER PRIMARY KEY, room_ids TEXT NOT NULL, total_cost INTEGER NOT NULL,
+      start_date TEXT NOT NULL, end_date TEXT NOT NULL, nights INTEGER NOT NULL CHECK (nights BETWEEN 1 AND 365),
       created_at TEXT NOT NULL, user_id INTEGER NOT NULL REFERENCES users(id), checkout_at TEXT);
     CREATE TABLE IF NOT EXISTS passengers (
       id INTEGER PRIMARY KEY, assignment_id INTEGER NOT NULL REFERENCES assignments(id),

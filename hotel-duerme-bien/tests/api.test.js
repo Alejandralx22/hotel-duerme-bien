@@ -19,11 +19,13 @@ before(async () => {
 });
 after(() => server.close());
 
+const day = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
 async function call(method, url, body, s) {
   if (body?.responsible_index !== undefined) { // la API recibe is_responsible por pasajero
     const { responsible_index: ri, ...rest } = body;
     body = { ...rest, passengers: rest.passengers.map((p, i) => ({ ...p, is_responsible: i === ri })) };
   }
+  if (body?.passengers && body.start_date === undefined) body = { ...body, start_date: day(0), end_date: day(1) }; // 1 noche por defecto
   const r = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json', ...(s ? { Cookie: s.cookie, 'X-CSRF-Token': s.csrf } : {}) }, body: body ? JSON.stringify(body) : undefined });
   return { status: r.status, body: await r.json(), headers: r.headers };
 }
@@ -31,7 +33,7 @@ async function login(username, password) {
   const r = await call('POST', '/api/login', { username, password });
   return { ...r, cookie: r.headers.get('set-cookie')?.split(';')[0], csrf: r.body.csrf };
 }
-const room = (s, number, capacity) => call('POST', '/api/rooms', { number, capacity, orientation: 'norte' }, s);
+const room = (s, number, capacity) => call('POST', '/api/rooms', { number, capacity, orientation: 'vista al mar' }, s);
 const P = (n, rut) => ({ name: n, rut });
 function R(body) { // RUT válido (módulo 11)
   let sum = 0, mul = 2;
@@ -153,7 +155,7 @@ test('CP-19 bitácora paginada y filtrable; solo el Administrador', async () => 
 });
 test('CP-20 (RF14) exactamente un responsable; orientaciones válidas', async () => {
   const s = await login('enc', ENC);
-  const v = await call('POST', '/api/rooms', { number: 401, capacity: 2, orientation: 'vista interior' }, s);
+  const v = await call('POST', '/api/rooms', { number: 401, capacity: 2, orientation: 'vista a la ciudad' }, s);
   assert.equal(v.status, 201);
   assert.equal((await call('POST', '/api/rooms', { number: 402, capacity: 2, orientation: 'techo' }, s)).status, 400);
   const go = (ps) => call('POST', '/api/assignments', { room_ids: [v.body.id], passengers: ps }, s);

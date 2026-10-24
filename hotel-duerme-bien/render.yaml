@@ -5,8 +5,26 @@ services:
     runtime: docker
     healthCheckPath: /api/health
     envVars:
+      - key: TRUST_PROXY   # Render usa proxy: necesario para registrar y bloquear por IP real
+        value: "1"
       - key: ADMIN_PASSWORD
         sync: false   # se ingresa en el panel, no en el repositorio
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: COMPANY_EMAIL_DOMAIN
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_SECURE
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
     disk:
       name: data
       mountPath: /data
