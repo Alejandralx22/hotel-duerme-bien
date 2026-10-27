@@ -11,23 +11,39 @@ const DB_FILE = process.env.NODE_ENV === 'production' ? '/tmp/hotel.db' : (proce
 fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
 const db = openDb(DB_FILE);
 
-// Sin credenciales por defecto (OWASP A07): si no hay admin, se crea con clave aleatoria o ADMIN_PASSWORD
+const productionDemo = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+
+// En local conserva el arranque seguro con contraseña aleatoria. En Vercel crea una demo
+// accesible para que las pantallas de habitaciones, pasajeros, cobros y salida estén visibles.
 if (!db.prepare("SELECT 1 FROM users WHERE role='admin'").get()) {
-  const pw = process.env.ADMIN_PASSWORD ?? randomBytes(9).toString('base64url') + '9a';
+  const pw = process.env.ADMIN_PASSWORD ?? (productionDemo ? 'Admin123456' : randomBytes(9).toString('base64url') + '9a');
   db.prepare('INSERT INTO users (username,password_hash,email,must_change_password,role,created_at) VALUES (?,?,?,?,?,?)')
-    .run('admin', hashPassword(pw), (process.env.ADMIN_EMAIL ?? 'admin@duermebien.local').toLowerCase(), process.env.ADMIN_PASSWORD ? 0 : 1, 'admin', new Date().toISOString());
+    .run('admin', hashPassword(pw), (process.env.ADMIN_EMAIL ?? 'admin@duermebien.local').toLowerCase(), productionDemo ? 0 : 1, 'admin', new Date().toISOString());
   audit(db, { id: null, username: 'system' }, 'create_user', 'admin inicial');
-  console.log(process.env.ADMIN_PASSWORD ? 'Usuario admin creado.' : `Usuario admin creado. Contraseña inicial (guárdela): ${pw}`);
+  if (!productionDemo) console.log(process.env.ADMIN_PASSWORD ? 'Usuario admin creado.' : `Usuario admin creado. Contraseña inicial (guárdela): ${pw}`);
 }
-const mfa = process.env.MFA_EMAIL !== '0'; // verificación por correo activada por defecto
-if (mfa && !process.env.SMTP_HOST) console.warn('AVISO: SMTP no configurado; los códigos de verificación se imprimen en esta consola.');
+if (productionDemo && !db.prepare("SELECT 1 FROM users WHERE username='encargado'").get()) {
+  const encargadoPassword = process.env.ENCARGADO_PASSWORD ?? 'Hotel123456';
+  db.prepare('INSERT INTO users (username,password_hash,email,must_change_password,role,created_at) VALUES (?,?,?,?,?,?)')
+    .run('encargado', hashPassword(encargadoPassword), 'encargado@duermebien.local', 0, 'encargado', new Date().toISOString());
+  audit(db, { id: null, username: 'system' }, 'create_user', 'encargado de demostración');
+}
+if (productionDemo && db.prepare('SELECT COUNT(*) AS c FROM rooms WHERE deleted=0').get().c === 0) {
+  const now = new Date().toISOString();
+  const insert = db.prepare('INSERT INTO rooms (number,capacity,orientation,created_at) VALUES (?,?,?,?)');
+  insert.run(101, 2, 'vista al mar', now);
+  insert.run(102, 3, 'vista al mar', now);
+  insert.run(103, 2, 'vista a la ciudad', now);
+}
+const mfa = !!process.env.SMTP_HOST && process.env.MFA_EMAIL !== '0'; // sin SMTP, la demo no bloquea el ingreso por correo
 
 export const app = createApp(db, {
   secure: process.env.NODE_ENV === 'production',
   trustProxy: process.env.TRUST_PROXY === '1',
   mfa,
   emailDomain: process.env.COMPANY_EMAIL_DOMAIN || null,
-  mailer: mailerFromEnv()
+  mailer: mailerFromEnv(),
+  demo: productionDemo
 });
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
