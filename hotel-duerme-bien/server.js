@@ -1,12 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { openDb, audit } from './src/db.js';
 import { hashPassword } from './src/security.js';
 import { createApp } from './src/app.js';
 import { mailerFromEnv } from './src/mailer.js';
 
-const PORT = Number(process.env.PORT ?? 3000);
 const DB_FILE = process.env.NODE_ENV === 'production' ? '/tmp/hotel.db' : (process.env.DB_FILE ?? './data/hotel.db');
 fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
 const db = openDb(DB_FILE);
@@ -21,7 +21,23 @@ if (!db.prepare("SELECT 1 FROM users WHERE role='admin'").get()) {
 }
 const mfa = process.env.MFA_EMAIL !== '0'; // verificación por correo activada por defecto
 if (mfa && !process.env.SMTP_HOST) console.warn('AVISO: SMTP no configurado; los códigos de verificación se imprimen en esta consola.');
-createApp(db, { secure: process.env.NODE_ENV === 'production', trustProxy: process.env.TRUST_PROXY === '1',
-  mfa, emailDomain: process.env.COMPANY_EMAIL_DOMAIN || null, mailer: mailerFromEnv() })
-  .listen(PORT, () => console.log(`Hotel Duerme Bien en http://localhost:${PORT}`));
-if (process.env.NODE_ENV === 'production') console.log('Modo producción: publique el sistema detrás de HTTPS. Por http plano la cookie de sesión no se marca Secure.');
+
+export const app = createApp(db, {
+  secure: process.env.NODE_ENV === 'production',
+  trustProxy: process.env.TRUST_PROXY === '1',
+  mfa,
+  emailDomain: process.env.COMPANY_EMAIL_DOMAIN || null,
+  mailer: mailerFromEnv()
+});
+
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  const PORT = Number(process.env.PORT ?? 3000);
+  app.listen(PORT, () => console.log(`Hotel Duerme Bien en http://localhost:${PORT}`));
+  if (process.env.NODE_ENV === 'production') console.log('Modo producción: publique el sistema detrás de HTTPS. Por http plano la cookie de sesión no se marca Secure.');
+}
+
+// Adaptador de Vercel para el servidor HTTP Node existente
+export default function handler(req, res) {
+  app.emit('request', req, res);
+}
