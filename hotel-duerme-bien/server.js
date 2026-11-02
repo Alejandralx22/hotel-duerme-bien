@@ -7,7 +7,7 @@ import { createApp } from './src/app.js';
 import { mailerFromEnv } from './src/mailer.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
-const DB_FILE = process.env.NODE_ENV === 'production' ? '/tmp/hotel.db' : (process.env.DB_FILE ?? './data/hotel.db');
+const DB_FILE = process.env.DB_FILE ?? (process.env.NODE_ENV === 'production' || process.env.VERCEL === '1' ? '/tmp/hotel.db' : './data/hotel.db');
 fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
 const db = openDb(DB_FILE);
 
@@ -21,7 +21,16 @@ if (!db.prepare("SELECT 1 FROM users WHERE role='admin'").get()) {
 }
 const mfa = process.env.MFA_EMAIL !== '0'; // verificación por correo activada por defecto
 if (mfa && !process.env.SMTP_HOST) console.warn('AVISO: SMTP no configurado; los códigos de verificación se imprimen en esta consola.');
-createApp(db, { secure: process.env.NODE_ENV === 'production', trustProxy: process.env.TRUST_PROXY === '1',
-  mfa, emailDomain: process.env.COMPANY_EMAIL_DOMAIN || null, mailer: mailerFromEnv() })
-  .listen(PORT, () => console.log(`Hotel Duerme Bien en http://localhost:${PORT}`));
-if (process.env.NODE_ENV === 'production') console.log('Modo producción: publique el sistema detrás de HTTPS. Por http plano la cookie de sesión no se marca Secure.');
+const app = createApp(db, { secure: process.env.NODE_ENV === 'production' || process.env.VERCEL === '1', trustProxy: process.env.TRUST_PROXY === '1' || process.env.VERCEL === '1',
+  mfa, emailDomain: process.env.COMPANY_EMAIL_DOMAIN || null, mailer: mailerFromEnv() });
+
+if (process.env.VERCEL !== '1') {
+  app.listen(PORT, () => console.log(`Hotel Duerme Bien en http://localhost:${PORT}`));
+  if (process.env.NODE_ENV === 'production') console.log('Modo producción local: publique el sistema detrás de HTTPS.');
+}
+
+// Adaptador para Vercel Functions: /api/* se dirige a este módulo y Vercel
+// necesita una función exportada como handler.
+export default function handler(req, res) {
+  app.emit('request', req, res);
+}
