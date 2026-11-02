@@ -18,10 +18,10 @@ const DUMMY_HASH = S.hashPassword('dummy-password-1'); // evita enumeración de 
 export function createApp(db, { secure = false, trustProxy = false, mfa = false, emailDomain = null, mailer = consoleMailer, demo = false } = {}) {
   // Detrás de un proxy cloud la IP real viene en X-Forwarded-For (el último valor lo agrega el proxy)
   const clientIp = (req) => (trustProxy && req.headers['x-forwarded-for']
-    ? String(req.headers['x-forwarded-for']).split(',').pop().trim() : req.socket.remoteAddress ?? '');
+    ? String(req.headers['x-forwarded-for']).split(',').pop().trim() : req.socket?.remoteAddress ?? '');
   // La cookie es Secure cuando la conexión es HTTPS (directa o detrás de un proxy cloud que envía X-Forwarded-Proto).
   // Si se marcara Secure sobre http plano, el navegador la descartaría y el usuario volvería al ingreso en bucle.
-  const isHttps = (req) => !!req.socket.encrypted || String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() === 'https';
+  const isHttps = (req) => !!req.socket?.encrypted || String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() === 'https';
   const cookie = (v, age, req) => `sid=${v}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${secure && isHttps(req) ? '; Secure' : ''}`;
 
   function getSession(req) {
