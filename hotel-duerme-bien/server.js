@@ -48,7 +48,7 @@ export const app = createApp(db, {
 });
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
+if (isMain && !process.env.VERCEL) {
   const PORT = Number(process.env.PORT ?? 3000);
   app.listen(PORT, () => console.log(`Hotel Duerme Bien en http://localhost:${PORT}`));
   if (process.env.NODE_ENV === 'production') console.log('Modo producción: publique el sistema detrás de HTTPS. Por http plano la cookie de sesión no se marca Secure.');
@@ -57,4 +57,8 @@ if (isMain) {
 // Adaptador de Vercel para el servidor HTTP Node existente
 export default function handler(req, res) {
   app.emit('request', req, res);
+  return new Promise((resolve, reject) => {
+    res.once?.('finish', resolve);
+    res.once?.('close', resolve);
+  });
 }
