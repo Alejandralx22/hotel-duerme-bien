@@ -15,7 +15,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
 const SESSION_MS = 8 * 3600 * 1000;
 const DUMMY_HASH = S.hashPassword('dummy-password-1'); // evita enumeración de usuarios por tiempo
 
-export function createApp(db, { secure = false, trustProxy = false, mfa = false, emailDomain = null, mailer = consoleMailer } = {}) {
+export function createApp(db, { secure = false, trustProxy = false, mfa = false, emailDomain = null, mailer = consoleMailer, demo = false } = {}) {
   // Detrás de un proxy cloud la IP real viene en X-Forwarded-For (el último valor lo agrega el proxy)
   const clientIp = (req) => (trustProxy && req.headers['x-forwarded-for']
     ? String(req.headers['x-forwarded-for']).split(',').pop().trim() : req.socket.remoteAddress ?? '');
@@ -75,7 +75,7 @@ export function createApp(db, { secure = false, trustProxy = false, mfa = false,
       return { ok: true };
     }],
     ['GET', /^\/api\/me$/, ['admin', 'encargado'], (c) => ({ username: c.session.username, role: c.session.role, csrf: c.session.csrf, must_change: !!c.session.must_change })],
-    ['GET', /^\/api\/config$/, null, () => ({ mfa, email_domain: emailDomain })],
+    ['GET', /^\/api\/config$/, null, () => ({ mfa, email_domain: emailDomain, demo })],
     ['GET', /^\/api\/health$/, null, () => ({ status: 'ok' })],
     // RF05: solo el Administrador registra Encargados (perfil único por usuario, RF03)
     ['POST', /^\/api\/login\/verify$/, null, (c) => {

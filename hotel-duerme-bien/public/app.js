@@ -5,7 +5,7 @@ const ACTIONS = { login: 'Inicio de sesión', logout: 'Cierre de sesión', creat
   delete_room: 'Baja de habitación', assign_passengers: 'Asignación de pasajeros', checkout: 'Check-out',
   change_password: 'Cambio de contraseña', reset_password: 'Restablecimiento de contraseña' };
 const COST = 40000;
-let session = null, tab = 'rooms', timer = null, resume = null, cfg = { mfa: false, email_domain: null };
+let session = null, tab = 'rooms', timer = null, resume = null, cfg = { mfa: false, email_domain: null, demo: false };
 const audit = { page: 1, action: '', username: '' };
 const $ = (id) => document.getElementById(id);
 const app = $('app');
@@ -105,8 +105,10 @@ function loginView(info) {
     }
   };
   p.addEventListener('keydown', (e) => e.key === 'Enter' && go());
+  const demoAccess = cfg.demo ? h('button', { class: 'sec', onclick: () => { u.value = 'encargado'; p.value = 'Hotel123456'; go(); } }, 'Abrir sistema de hotel (demo)') : null;
   app.replaceChildren(h('section', { class: 'login' }, h('h2', {}, 'Acceso del personal'),
-    h('p', { class: 'hint' }, 'Solo personal autorizado. No existe registro público.'), u, p, h('button', { onclick: go }, 'Ingresar'), msg));
+    h('p', { class: 'hint' }, 'Solo personal autorizado. No existe registro público.'), u, p,
+    demoAccess, h('button', { onclick: go }, 'Ingresar'), msg));
   u.focus();
 }
 
