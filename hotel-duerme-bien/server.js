@@ -22,12 +22,20 @@ if (!db.prepare("SELECT 1 FROM users WHERE role='admin'").get()) {
     .run('admin', hashPassword(pw), (process.env.ADMIN_EMAIL ?? 'admin@duermebien.local').toLowerCase(), productionDemo ? 0 : 1, 'admin', new Date().toISOString());
   audit(db, { id: null, username: 'system' }, 'create_user', 'admin inicial');
   if (!productionDemo) console.log(process.env.ADMIN_PASSWORD ? 'Usuario admin creado.' : `Usuario admin creado. Contraseña inicial (guárdela): ${pw}`);
+} else if (productionDemo) {
+  const adminPassword = process.env.ADMIN_PASSWORD ?? 'Admin123456';
+  db.prepare('UPDATE users SET password_hash=?, must_change_password=0 WHERE role=?')
+    .run(hashPassword(adminPassword), 'admin');
 }
 if (productionDemo && !db.prepare("SELECT 1 FROM users WHERE username='encargado'").get()) {
   const encargadoPassword = process.env.ENCARGADO_PASSWORD ?? 'Hotel123456';
   db.prepare('INSERT INTO users (username,password_hash,email,must_change_password,role,created_at) VALUES (?,?,?,?,?,?)')
     .run('encargado', hashPassword(encargadoPassword), 'encargado@duermebien.local', 0, 'encargado', new Date().toISOString());
   audit(db, { id: null, username: 'system' }, 'create_user', 'encargado de demostración');
+} else if (productionDemo) {
+  const encargadoPassword = process.env.ENCARGADO_PASSWORD ?? 'Hotel123456';
+  db.prepare('UPDATE users SET password_hash=?, must_change_password=0 WHERE username=?')
+    .run(hashPassword(encargadoPassword), 'encargado');
 }
 if (productionDemo && db.prepare('SELECT COUNT(*) AS c FROM rooms WHERE deleted=0').get().c === 0) {
   const now = new Date().toISOString();
