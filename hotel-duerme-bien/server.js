@@ -17,23 +17,23 @@ const productionDemo = process.env.NODE_ENV === 'production' || !!process.env.VE
 // En local conserva el arranque seguro con contraseña aleatoria. En Vercel crea una demo
 // accesible para que las pantallas de habitaciones, pasajeros, cobros y salida estén visibles.
 if (!db.prepare("SELECT 1 FROM users WHERE role='admin'").get()) {
-  const pw = process.env.ADMIN_PASSWORD ?? (productionDemo ? 'Admin123456' : randomBytes(9).toString('base64url') + '9a');
+  const pw = productionDemo ? 'Admin123456' : (process.env.ADMIN_PASSWORD ?? randomBytes(9).toString('base64url') + '9a');
   db.prepare('INSERT INTO users (username,password_hash,email,must_change_password,role,created_at) VALUES (?,?,?,?,?,?)')
     .run('admin', hashPassword(pw), (process.env.ADMIN_EMAIL ?? 'admin@duermebien.local').toLowerCase(), productionDemo ? 0 : 1, 'admin', new Date().toISOString());
   audit(db, { id: null, username: 'system' }, 'create_user', 'admin inicial');
   if (!productionDemo) console.log(process.env.ADMIN_PASSWORD ? 'Usuario admin creado.' : `Usuario admin creado. Contraseña inicial (guárdela): ${pw}`);
 } else if (productionDemo) {
-  const adminPassword = process.env.ADMIN_PASSWORD ?? 'Admin123456';
+  const adminPassword = 'Admin123456';
   db.prepare('UPDATE users SET password_hash=?, must_change_password=0 WHERE role=?')
     .run(hashPassword(adminPassword), 'admin');
 }
 if (productionDemo && !db.prepare("SELECT 1 FROM users WHERE username='encargado'").get()) {
-  const encargadoPassword = process.env.ENCARGADO_PASSWORD ?? 'Hotel123456';
+  const encargadoPassword = 'Hotel123456';
   db.prepare('INSERT INTO users (username,password_hash,email,must_change_password,role,created_at) VALUES (?,?,?,?,?,?)')
     .run('encargado', hashPassword(encargadoPassword), 'encargado@duermebien.local', 0, 'encargado', new Date().toISOString());
   audit(db, { id: null, username: 'system' }, 'create_user', 'encargado de demostración');
 } else if (productionDemo) {
-  const encargadoPassword = process.env.ENCARGADO_PASSWORD ?? 'Hotel123456';
+  const encargadoPassword = 'Hotel123456';
   db.prepare('UPDATE users SET password_hash=?, must_change_password=0 WHERE username=?')
     .run(hashPassword(encargadoPassword), 'encargado');
 }
