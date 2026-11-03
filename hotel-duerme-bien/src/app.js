@@ -113,20 +113,20 @@ export function createApp(db, { secure = false, trustProxy = false, mfa = false,
       return { ok: true };
     }],
     ['GET', /^\/api\/audit$/, ['admin'], (c) => svc.listAudit(db, Object.fromEntries(c.url.searchParams))],
-    ['GET', /^\/api\/rooms$/, ['encargado'], () => svc.listRooms(db)],
-    ['POST', /^\/api\/rooms$/, ['encargado'], (c) => {
+    ['GET', /^\/api\/rooms$/, ['admin', 'encargado'], () => svc.listRooms(db)],
+    ['POST', /^\/api\/rooms$/, ['admin', 'encargado'], (c) => {
       const r = svc.createRoom(db, c.body); audit(db, c.session, 'create_room', `#${r.number}`, c.ip); c.status = 201; return r;
     }],
-    ['DELETE', /^\/api\/rooms\/(\d+)$/, ['encargado'], (c) => {
+    ['DELETE', /^\/api\/rooms\/(\d+)$/, ['admin', 'encargado'], (c) => {
       const r = svc.deleteRoom(db, id(c.m[1])); audit(db, c.session, 'delete_room', `#${r.number}`, c.ip); return { ok: true };
     }],
-    ['POST', /^\/api\/assignments$/, ['encargado'], (c) => {
+    ['POST', /^\/api\/assignments$/, ['admin', 'encargado'], (c) => {
       const a = svc.assign(db, c.session.id, c.body); audit(db, c.session, 'assign_passengers', `asig ${a.id}`, c.ip); c.status = 201; return a;
     }],
-    ['POST', /^\/api\/assignments\/(\d+)\/checkout$/, ['encargado'], (c) => {
+    ['POST', /^\/api\/assignments\/(\d+)\/checkout$/, ['admin', 'encargado'], (c) => {
       svc.checkout(db, id(c.m[1])); audit(db, c.session, 'checkout', c.m[1], c.ip); return { ok: true };
     }],
-    ['GET', /^\/api\/passengers$/, ['encargado'], () => svc.listGuests(db)],
+    ['GET', /^\/api\/passengers$/, ['admin', 'encargado'], () => svc.listGuests(db)],
   ];
 
   async function api(req, res, url) {

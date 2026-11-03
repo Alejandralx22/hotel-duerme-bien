@@ -24,10 +24,10 @@ const api = (base) => async (method, url, body, s, raw) => {
 };
 const sess = async (call, u, p) => { const r = await call('POST', '/api/login', { username: u, password: p }); return { ...r, cookie: r.headers.get('set-cookie')?.split(';')[0], csrf: r.body.csrf }; };
 
-test('CP-28 (A01) mínimo privilegio: el Administrador no accede a datos de la operación', async () => {
+test('CP-28 (A01) roles separados: el Administrador puede operar y supervisar el hotel', async () => {
   const call = api(await start()), a = await sess(call, 'admin', ADMIN), e = await sess(call, 'enc', ENC);
-  assert.equal((await call('GET', '/api/rooms', null, a)).status, 403);
-  assert.equal((await call('GET', '/api/passengers', null, a)).status, 403);
+  assert.equal((await call('GET', '/api/rooms', null, a)).status, 200);
+  assert.equal((await call('GET', '/api/passengers', null, a)).status, 200);
   assert.equal((await call('GET', '/api/rooms', null, e)).status, 200);
   assert.equal((await call('GET', '/api/users', null, e)).status, 403);
 });

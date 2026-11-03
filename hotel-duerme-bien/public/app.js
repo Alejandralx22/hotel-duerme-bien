@@ -95,8 +95,8 @@ function loginView(info) {
     // Comprueba que el navegador conservó la cookie; si no, evita el bucle ingreso → cierre y explica el motivo
     const alive = await fetch('/api/me', { credentials: 'same-origin' }).then((r) => r.ok).catch(() => false);
     if (!alive) return note(target, '⚠️ El servidor aceptó su clave, pero el navegador no conservó la sesión (cookie). Suele pasar si el sistema se abre por http y no por https, o si el navegador bloquea las cookies. Abra el sistema por https o permita las cookies.', 'lock');
-    const allowed = sess.role === 'admin' ? ['users', 'audit', 'password'] : ['dashboard', 'rooms', 'assign', 'password'];
-    session = sess; tab = resume && allowed.includes(resume) ? resume : sess.role === 'admin' ? 'users' : 'dashboard'; resume = null; render();
+    const allowed = ['dashboard', 'rooms', 'assign', 'password', 'users', 'audit'];
+    session = sess; tab = resume && allowed.includes(resume) ? resume : 'dashboard'; resume = null; render();
   };
   const codeStep = (res) => { // segundo paso: código enviado al correo de la empresa
     const m2 = h('div'), code = h('input', { placeholder: 'Código de 6 dígitos', inputmode: 'numeric', maxlength: '6', autocomplete: 'one-time-code', 'aria-label': 'Código de verificación' });
@@ -130,7 +130,7 @@ async function render() {
   $('who').replaceChildren(h('span', { class: 'user' }, session.username), h('span', { class: 'badge role-' + session.role }, ROLE[session.role]),
     h('button', { onclick: async () => { try { await api('POST', '/api/logout'); } catch { /* igual se limpia la sesión local */ } session = null; resume = null; audit.page = 1; audit.action = ''; audit.username = ''; loginView('Sesión cerrada correctamente.'); } }, 'Cerrar sesión'));
   const tabs = session.role === 'admin'
-    ? [['users', 'Usuarios'], ['audit', 'Auditoría']]
+    ? [['dashboard', 'Estado del Hotel'], ['rooms', 'Habitaciones'], ['assign', 'Asignación / Check-in'], ['users', 'Usuarios'], ['audit', 'Auditoría']]
     : [['dashboard', 'Estado del Hotel'], ['rooms', 'Habitaciones'], ['assign', 'Asignación / Check-in']];
   if (session.must_change) tab = 'password'; // clave temporal: no puede usar el sistema hasta cambiarla
   else tabs.push(['password', 'Cambiar contraseña']);
