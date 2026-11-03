@@ -9,6 +9,19 @@ let session = null, tab = 'rooms', timer = null, resume = null, cfg = { mfa: fal
 const audit = { page: 1, action: '', username: '' };
 const $ = (id) => document.getElementById(id);
 const app = $('app');
+const themeToggle = $('theme-toggle');
+const preferredTheme = localStorage.getItem('hotel-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem('hotel-theme', theme);
+  themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro');
+  themeToggle.setAttribute('title', theme === 'dark' ? 'Modo claro' : 'Modo oscuro');
+  themeToggle.textContent = theme === 'dark' ? '☀️' : '🌙';
+}
+
+applyTheme(preferredTheme);
+themeToggle.addEventListener('click', () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 
 function h(tag, props = {}, ...kids) {
   const e = document.createElement(tag);
