@@ -52,7 +52,8 @@ export const app = createApp(db, {
   mfa,
   emailDomain: process.env.COMPANY_EMAIL_DOMAIN || null,
   mailer: mailerFromEnv(),
-  demo: productionDemo
+  demo: productionDemo,
+  authSecret: process.env.AUTH_SECRET ?? (process.env.ADMIN_PASSWORD || 'hotel-duerme-bien-demo-session')
 });
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

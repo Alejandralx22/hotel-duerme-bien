@@ -2,7 +2,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual, createHmac } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { audit } from './db.js';
 import { consoleMailer } from './mailer.js';
@@ -15,7 +15,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
 const SESSION_MS = 8 * 3600 * 1000;
 const DUMMY_HASH = S.hashPassword('dummy-password-1'); // evita enumeración de usuarios por tiempo
 
-export function createApp(db, { secure = false, trustProxy = false, mfa = false, emailDomain = null, mailer = consoleMailer, demo = false } = {}) {
+export function createApp(db, { secure = false, trustProxy = false, mfa = false, emailDomain = null, mailer = consoleMailer, demo = false, authSecret = 'hotel-duerme-bien-demo-session' } = {}) {
   // Detrás de un proxy cloud la IP real viene en X-Forwarded-For (el último valor lo agrega el proxy)
   const clientIp = (req) => (trustProxy && req.headers['x-forwarded-for']
     ? String(req.headers['x-forwarded-for']).split(',').pop().trim() : req.socket?.remoteAddress ?? '');
@@ -23,14 +23,33 @@ export function createApp(db, { secure = false, trustProxy = false, mfa = false,
   // Si se marcara Secure sobre http plano, el navegador la descartaría y el usuario volvería al ingreso en bucle.
   const isHttps = (req) => !!req.socket?.encrypted || String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() === 'https';
   const cookie = (v, age, req) => `sid=${v}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${secure && isHttps(req) ? '; Secure' : ''}`;
+  const authCookie = (v, age, req) => `auth=${v}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${secure && isHttps(req) ? '; Secure' : ''}`;
+  const signAuth = (payload) => {
+    const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const sig = createHmac('sha256', authSecret).update(body).digest('base64url');
+    return `${body}.${sig}`;
+  };
+  const readAuth = (req) => {
+    const m = /(?:^|;\s*)auth=([^;]+)/.exec(req.headers.cookie ?? '');
+    if (!m) return null;
+    const [body, sig] = m[1].split('.'); if (!body || !sig) return null;
+    const expected = createHmac('sha256', authSecret).update(body).digest('base64url');
+    const a = Buffer.from(sig), b = Buffer.from(expected);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+    try {
+      const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+      if (!payload.expires_at || payload.expires_at < Date.now()) return null;
+      return { id: payload.id, username: payload.username, role: payload.role, csrf: payload.csrf, must_change: !!payload.must_change, token_hash: null };
+    } catch { return null; }
+  };
 
   function getSession(req) {
     const m = /(?:^|;\s*)sid=([a-f0-9]{64})/.exec(req.headers.cookie ?? '');
-    if (!m) return null;
+    if (!m) return readAuth(req);
     const s = db.prepare(`SELECT s.token_hash, s.csrf_token AS csrf, s.expires_at, u.id, u.username, u.role, u.must_change_password AS must_change
       FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`).get(S.sha256(m[1]));
-    if (!s || s.expires_at < Date.now()) return null;
-    return s;
+    if (s && s.expires_at >= Date.now()) return s;
+    return readAuth(req);
   }
 
   async function readJson(req) {
@@ -42,8 +61,10 @@ export function createApp(db, { secure = false, trustProxy = false, mfa = false,
 
   const openSession = (c, u) => {
     const token = randomBytes(32).toString('hex'), csrf = randomBytes(16).toString('hex');
-    db.prepare('INSERT INTO sessions (token_hash,user_id,csrf_token,expires_at) VALUES (?,?,?,?)').run(S.sha256(token), u.id, csrf, Date.now() + SESSION_MS);
-    c.res.setHeader('Set-Cookie', cookie(token, SESSION_MS / 1000, c.req));
+    const expiresAt = Date.now() + SESSION_MS;
+    db.prepare('INSERT INTO sessions (token_hash,user_id,csrf_token,expires_at) VALUES (?,?,?,?)').run(S.sha256(token), u.id, csrf, expiresAt);
+    const signed = signAuth({ id: u.id, username: u.username, role: u.role, csrf, must_change: !!u.must_change_password, expires_at: expiresAt });
+    c.res.setHeader('Set-Cookie', [cookie(token, SESSION_MS / 1000, c.req), authCookie(signed, SESSION_MS / 1000, c.req)]);
     return { username: u.username, role: u.role, csrf, must_change: !!u.must_change_password };
   };
   const id = (p) => { const n = Number(p); if (!Number.isInteger(n)) throw new HttpError(400, 'Id inválido'); return n; };
@@ -69,9 +90,9 @@ export function createApp(db, { secure = false, trustProxy = false, mfa = false,
       return openSession(c, u);
     }],
     ['POST', /^\/api\/logout$/, ['admin', 'encargado'], (c) => {
-      db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(c.session.token_hash);
+      if (c.session.token_hash) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(c.session.token_hash);
       audit(db, c.session, 'logout', '', c.ip);
-      c.res.setHeader('Set-Cookie', cookie('', 0, c.req));
+      c.res.setHeader('Set-Cookie', [cookie('', 0, c.req), authCookie('', 0, c.req)]);
       return { ok: true };
     }],
     ['GET', /^\/api\/me$/, ['admin', 'encargado'], (c) => ({ username: c.session.username, role: c.session.role, csrf: c.session.csrf, must_change: !!c.session.must_change })],
