@@ -194,16 +194,16 @@ const views = {
       people.forEach((p) => {
         const v = p.rut.value.trim(), n = rutNorm(v);
         p.hint.className = !v ? 'hint' : n && seen.get(n) === 1 ? 'vok' : 'vbad';
-        p.hint.textContent = !v ? 'Formato 12345678-5' : !n ? '✗ RUT inválido' : seen.get(n) > 1 ? '✗ RUT repetido' : '✓ RUT válido';
+        p.hint.textContent = !v ? 'Formato 11111111-1' : !n ? '✗ RUT inválido' : seen.get(n) > 1 ? '✗ RUT repetido' : '✓ RUT válido';
       });
     };
     const addRow = () => {
       const i = people.length, n = i + 1;
       const name = keep(`ci.p${i}.name`, h('input', { type: 'text', placeholder: `Pasajero ${n}: nombre completo`, 'aria-label': `Nombre del pasajero ${n}` }));
-      const rut = keep(`ci.p${i}.rut`, h('input', { type: 'text', placeholder: 'RUT (12345678-5)', 'aria-label': `RUT del pasajero ${n}` }));
+      const rut = keep(`ci.p${i}.rut`, h('input', { type: 'text', placeholder: 'RUT (11111111-1)', 'aria-label': `RUT del pasajero ${n}` }));
       const resp = h('input', { type: 'radio', name: 'resp', 'aria-label': `Responsable: pasajero ${n}` });
       resp.addEventListener('change', () => { drafts['ci.resp'] = i; });
-      const hint = h('span', { class: 'hint' }, 'Formato 12345678-5');
+      const hint = h('span', { class: 'hint' }, 'Formato 11111111-1');
       rut.addEventListener('input', checkRuts);
       const el = h('div', { class: 'prow' }, h('label', {}, resp, ' Responsable'), name, rut, hint);
       people.push({ name, rut, resp, hint, el }); rowsBox.append(el);

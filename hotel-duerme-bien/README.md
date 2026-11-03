@@ -49,6 +49,8 @@ Elegida por el tamaño del proyecto (1 hotel, equipo de 3–4): un microservicio
 
 **Cloud (PaaS + contenedor):** `Dockerfile` y `render.yaml` permiten desplegarlo como **PaaS** (Render, Railway, Fly.io) con disco persistente y HTTPS gestionado (`NODE_ENV=production` activa cookie `Secure` y HSTS). El cliente accede como **SaaS** vía navegador: el hotel no instala ni mantiene servidores (RNF04, sin equipo de TI propio).
 
+> Importante: Vercel usa almacenamiento efímero. SQLite ubicado en `/tmp` puede perder habitaciones, usuarios y registros al reiniciar o cambiar de instancia, por lo que no debe usarse como almacenamiento persistente de producción. Para conservar los datos, despliegue el contenedor en Render o una plataforma con volumen persistente y configure `DB_FILE=/data/hotel.db`.
+
 ## OWASP Top 10 (edición 2021) aplicado
 | Riesgo | Control en el prototipo |
 |---|---|

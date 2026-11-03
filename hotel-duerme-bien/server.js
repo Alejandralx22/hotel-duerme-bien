@@ -9,6 +9,9 @@ import { mailerFromEnv } from './src/mailer.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const DB_FILE = process.env.DB_FILE ?? (process.env.NODE_ENV === 'production' || process.env.VERCEL === '1' ? '/tmp/hotel.db' : './data/hotel.db');
+if (process.env.VERCEL === '1' && !process.env.DB_FILE) {
+  console.warn('ADVERTENCIA: Vercel usa almacenamiento efímero. SQLite /tmp/hotel.db puede perder habitaciones y datos al cambiar de instancia o reiniciar. Use Render con disco persistente para producción.');
+}
 fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
 const db = openDb(DB_FILE);
 
